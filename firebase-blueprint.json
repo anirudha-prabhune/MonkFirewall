@@ -1,0 +1,130 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile document storing basic user metadata and preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "photoURL": { "type": "string", "maxLength": 2048 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" },
+        "isSandbox": { "type": "boolean" }
+      },
+      "required": ["uid", "email"]
+    },
+    "RiskConfig": {
+      "title": "RiskConfig",
+      "description": "User's personal risk parameters including daily loss limit and warning thresholds.",
+      "type": "object",
+      "properties": {
+        "dailyLossLimit": { "type": "number" },
+        "warningThreshold1": { "type": "number" },
+        "warningThreshold2": { "type": "number" },
+        "lockDurationMinutes": { "type": "number" },
+        "lockDurationType": { "type": "string", "enum": ["FIXED", "UNTIL_4PM"] },
+        "includeRealisedPnl": { "type": "boolean" },
+        "includeUnrealisedPnl": { "type": "boolean" },
+        "enabled": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["dailyLossLimit", "warningThreshold1", "warningThreshold2", "lockDurationMinutes", "enabled"]
+    },
+    "BrokerConnection": {
+      "title": "BrokerConnection",
+      "description": "Metadata for connected brokerage account (no secret keys).",
+      "type": "object",
+      "properties": {
+        "broker": { "type": "string", "enum": ["zerodha", "mock"] },
+        "status": { "type": "string", "enum": ["CONNECTED", "DISCONNECTED", "EXPIRED", "ERROR"] },
+        "userId": { "type": "string", "maxLength": 128 },
+        "brokerUserId": { "type": "string", "maxLength": 64 },
+        "connectedAt": { "type": "string", "format": "date-time" },
+        "lastSyncAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["broker", "status", "userId"]
+    },
+    "RiskSession": {
+      "title": "RiskSession",
+      "description": "Trading day risk session tracking current state, P&L thresholds, and lock state.",
+      "type": "object",
+      "properties": {
+        "tradingDate": { "type": "string", "maxLength": 10 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "state": { "type": "string", "enum": ["ALLOW", "WARNING", "LOCKED"] },
+        "realisedPnl": { "type": "number" },
+        "unrealisedPnl": { "type": "number" },
+        "totalPnl": { "type": "number" },
+        "lockedAt": { "type": "string", "format": "date-time" },
+        "lockExpiresAt": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tradingDate", "userId", "state"]
+    },
+    "Position": {
+      "title": "Position",
+      "description": "Normalized derivative or equity position representation.",
+      "type": "object",
+      "properties": {
+        "instrumentToken": { "type": "number" },
+        "exchange": { "type": "string", "maxLength": 16 },
+        "tradingsymbol": { "type": "string", "maxLength": 64 },
+        "segment": { "type": "string", "maxLength": 16 },
+        "instrumentType": { "type": "string", "maxLength": 16 },
+        "product": { "type": "string", "maxLength": 16 },
+        "quantity": { "type": "number" },
+        "averagePrice": { "type": "number" },
+        "lastPrice": { "type": "number" },
+        "dayBuyQuantity": { "type": "number" },
+        "dayBuyValue": { "type": "number" },
+        "daySellQuantity": { "type": "number" },
+        "daySellValue": { "type": "number" },
+        "realisedPnl": { "type": "number" },
+        "unrealisedPnl": { "type": "number" },
+        "totalPnl": { "type": "number" }
+      },
+      "required": ["instrumentToken", "exchange", "tradingsymbol", "quantity", "averagePrice", "lastPrice"]
+    },
+    "RiskEvent": {
+      "title": "RiskEvent",
+      "description": "Audit record of risk evaluation transitions, limit alerts, or lock triggers.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["RISK_WARNING", "LOSS_LIMIT_BREACHED", "TRADING_LOCK_CREATED", "TRADING_LOCK_EXPIRED", "BROKER_CONNECTED", "BROKER_DISCONNECTED", "MARKET_DATA_STALE", "CONFIG_UPDATED"] },
+        "message": { "type": "string", "maxLength": 1024 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "message", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User account document scoped to authenticated user."
+    },
+    "/users/{userId}/riskConfig/{configId}": {
+      "schema": "RiskConfig",
+      "description": "User's risk configuration document (default id: 'config')."
+    },
+    "/users/{userId}/brokerConnections/{connectionId}": {
+      "schema": "BrokerConnection",
+      "description": "Broker credentials metadata and connection state."
+    },
+    "/users/{userId}/riskSessions/{tradingDate}": {
+      "schema": "RiskSession",
+      "description": "Day-scoped risk monitoring and lock status."
+    },
+    "/users/{userId}/positions/{positionId}": {
+      "schema": "Position",
+      "description": "Normalized user positions for current trading session."
+    },
+    "/users/{userId}/riskEvents/{eventId}": {
+      "schema": "RiskEvent",
+      "description": "Audit trail of risk-related actions and state changes."
+    }
+  }
+}

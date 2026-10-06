@@ -1,0 +1,42 @@
+{
+  "name": "react-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "start": "tsx server/index.ts",
+    "test": "tsx tests/phase1-business-logic.test.ts && tsx tests/phase2-comprehensive.test.ts && tsx tests/phase3-broker-positions.test.ts && tsx tests/phase4-pnl-engine.test.ts && tsx tests/phase5-risk-integration.test.ts && tsx tests/phase6-enforcement.test.ts && tsx tests/phase7-live-zerodha.test.ts && tsx tests/phase8-live-pnl-validation.test.ts && tsx tests/phase8a-real-account-shadow-validation.test.ts && tsx tests/phase8a-session-persistence.test.ts && tsx tests/phase8a-pipeline-correction.test.ts && tsx tests/phase8b-session-persistence-correction.test.ts && tsx tests/risk-config-and-demo.test.ts && tsx tests/phase9-live-risk-shadow.test.ts && tsx tests/phase10a-live-risk-recording.test.ts && tsx tests/phase10b-lock-lifecycle-disconnect.test.ts && tsx tests/phase10c-oauth-state-regression.test.ts",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "firebase": "^12.19.0",
+    "firebase-admin": "^14.5.0",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2",
+    "@types/express": "^4.17.21"
+  }
+}

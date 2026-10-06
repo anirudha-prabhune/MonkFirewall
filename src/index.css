@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-steel-blue: #3D5A80;
+  --color-powder-blue: #98C1D9;
+  --color-ice-cyan: #E0FBFC;
+  --color-coral: #EE6C4D;
+  --color-coral-hover: #D95333;
+  --color-midnight: #293241;
+
+  /* Semantic Aliases */
+  --color-brand-primary: #3D5A80;
+  --color-brand-secondary: #98C1D9;
+  --color-brand-accent: #EE6C4D;
+  --color-brand-bg-light: #F3F8FA;
+  --color-brand-dark: #293241;
+
+  /* Backward-compatible token mappings */
+  --color-gold: #EE6C4D;
+  --color-gold-hover: #D95333;
+  --color-gold-dark: #3D5A80;
+  --color-gold-light: rgba(224, 251, 252, 0.4);
+
+  --color-obsidian: #293241;
+  --color-surface-dark: #1F2633;
+  --color-surface-elevated: #283244;
+  --color-border-dark: #3D4A5E;
+
+  --color-sapphire: #3D5A80;
+  --color-sapphire-hover: #2B415C;
+  --color-ice-blue: #E0FBFC;
+  --color-deep-navy: #293241;
+  --color-atomic: #3D5A80;
+  --color-atomic-hover: #2B415C;
+  --color-ice: #E0FBFC;
+  --color-ice-dark: #98C1D9;
+}
+
+:root {
+  color-scheme: light;
+}
+
+:root.dark {
+  color-scheme: dark;
+}
+
+body {
+  transition: background-color 0.2s ease, color 0.2s ease;
+  background-color: #F3F8FA;
+  color: #293241;
+}
+
+.dark body,
+html.dark body {
+  background-color: #293241;
+  color: #E0FBFC;
+}
+

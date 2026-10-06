@@ -1,0 +1,140 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Authentication and ownership helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Connection testing
+    match /test/{docId} {
+      allow get: if true;
+    }
+
+    // Security check: Broker secrets must NEVER be present in client-writable documents
+    function hasNoBrokerSecrets(data) {
+      return !('apiKey' in data)
+        && !('apiSecret' in data)
+        && !('accessToken' in data)
+        && !('refreshToken' in data)
+        && !('clientSecret' in data)
+        && !('password' in data)
+        && !('totp' in data);
+    }
+
+    // Entity validation helpers
+    function isValidUserProfile(data) {
+      return data.uid is string && data.uid.size() <= 128
+        && data.email is string && data.email.size() <= 256
+        && (!('displayName' in data) || data.displayName == null || (data.displayName is string && data.displayName.size() <= 256))
+        && (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 2048))
+        && (!('createdAt' in data) || data.createdAt is string)
+        && (!('lastLoginAt' in data) || data.lastLoginAt is string)
+        && (!('isSandbox' in data) || data.isSandbox is bool);
+    }
+
+    function isValidRiskConfig(data) {
+      return data.dailyLossLimit is number && data.dailyLossLimit >= 0
+        && data.warningThreshold1 is number && data.warningThreshold1 >= 0 && data.warningThreshold1 <= 100
+        && data.warningThreshold2 is number && data.warningThreshold2 >= 0 && data.warningThreshold2 <= 100
+        && data.lockDurationMinutes is number && data.lockDurationMinutes >= 0
+        && data.enabled is bool
+        && (!('lockDurationType' in data) || (data.lockDurationType in ['FIXED', 'UNTIL_4PM']))
+        && (!('includeRealisedPnl' in data) || data.includeRealisedPnl is bool)
+        && (!('includeUnrealisedPnl' in data) || data.includeUnrealisedPnl is bool)
+        && (!('updatedAt' in data) || data.updatedAt is string);
+    }
+
+    function isValidBrokerConnection(data) {
+      return data.broker in ['zerodha', 'mock']
+        && data.status in ['CONNECTED', 'DISCONNECTED', 'EXPIRED', 'ERROR']
+        && data.userId is string && data.userId.size() <= 128
+        && (!('brokerUserId' in data) || (data.brokerUserId is string && data.brokerUserId.size() <= 64))
+        && (!('connectedAt' in data) || data.connectedAt is string)
+        && (!('lastSyncAt' in data) || data.lastSyncAt is string);
+    }
+
+    function isValidClientRiskEvent(data) {
+      return data.userId is string && data.userId.size() <= 128
+        && data.type == 'CONFIG_UPDATED' // Clients can ONLY record configuration changes
+        && data.message is string && data.message.size() <= 1024
+        && data.timestamp is string;
+    }
+
+    // User account match: strictly user-scoped
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false; // Blanket user enumeration forbidden
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming());
+      allow delete: if false;
+
+      // Risk Configuration subcollection
+      // Owner can read and update personal risk limits
+      match /riskConfig/{configId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(configId) && isValidRiskConfig(incoming());
+        allow delete: if false;
+      }
+
+      // Broker Connections subcollection
+      // Owner can manage connection status metadata; secrets are strictly blocked
+      match /brokerConnections/{connectionId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(connectionId) && isValidBrokerConnection(incoming()) && hasNoBrokerSecrets(incoming());
+        allow delete: if isOwner(userId);
+
+        // Subcollection: runtimeSession (Phase 8A)
+        // SERVER-AUTHORITATIVE & SERVER-ONLY: Client SDK has ZERO read/write/delete access!
+        match /runtimeSession/{sessionId} {
+          allow read, write: if false;
+        }
+      }
+
+      // Risk Sessions subcollection
+      // SERVER-AUTHORITATIVE: Client may read, but MUST NOT create, modify, or delete
+      match /riskSessions/{tradingDate} {
+        allow get, list: if isOwner(userId);
+        allow create, update, delete: if false;
+      }
+
+      // Positions subcollection
+      // SERVER-AUTHORITATIVE: Client may read, but MUST NOT create, modify, or delete
+      match /positions/{positionId} {
+        allow get, list: if isOwner(userId);
+        allow create, update, delete: if false;
+      }
+
+      // Audit Risk Events subcollection
+      // Append-only audit trail: immutable. Client can only log CONFIG_UPDATED events.
+      // Authoritative transitions (breaches, locks) belong strictly to server.
+      match /riskEvents/{eventId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(eventId) && isValidClientRiskEvent(incoming()) && incoming().userId == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
