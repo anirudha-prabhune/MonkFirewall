@@ -42,6 +42,7 @@ export interface RiskSession {
   lockExpiresAt?: string | null; // Alias for backward compatibility
   reason?: string | null;
   updatedAt?: string;
+  recordedAt?: string;
 }
 
 export interface RiskSessionSnapshot {

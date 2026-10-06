@@ -136,7 +136,10 @@ export function subscribeRiskSession(
       const sessionDocRef = doc(db, 'users', userId, 'riskSessions', today);
       unsubFirestore = onSnapshot(sessionDocRef, (snap) => {
         if (snap.exists() && active) {
-          onUpdate(snap.data() as RiskSession);
+          const docData = snap.data() as RiskSession;
+          if (docData && (docData.recordedAt || docData.isBreached || docData.state !== 'ALLOW')) {
+            onUpdate(docData);
+          }
         }
       });
     } catch {

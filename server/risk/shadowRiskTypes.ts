@@ -29,6 +29,8 @@ export interface ShadowRiskResult {
 
   expectedState: 'ALLOW' | 'WARNING' | 'LOCKED';
   isBreached: boolean;
+  lockedAt?: string | null;
+  lockUntil?: string | null;
   reason: string;
 
   validationState: string;

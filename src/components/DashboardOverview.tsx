@@ -134,6 +134,9 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       setFnoPositions(pos);
       setBrokerStatus(status);
       setPnlResult(pnl);
+      if (pnl && (pnl.riskSession || pnl.shadowSession)) {
+        setSession(pnl.riskSession || pnl.shadowSession);
+      }
     } catch (err) {
       console.error('Failed to load positions & PnL:', err);
     } finally {
@@ -335,15 +338,21 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     }
   };
 
-  // Remaining Lock Duration calculation
-  const getRemainingLockText = (): string | null => {
-    if (session.state !== 'LOCKED' || !session.lockUntil) return null;
+  // Remaining Lock Duration calculation strictly from authoritative session.lockUntil
+  const getRemainingLockText = (): string => {
+    if (session.state !== 'LOCKED') return 'N/A';
+    if (!session.lockUntil) return 'N/A (Missing lock timestamp)';
     const now = new Date().getTime();
     const expiry = new Date(session.lockUntil).getTime();
     const diffMs = expiry - now;
     if (diffMs <= 0) return 'Expiring momentarily';
     const minutes = Math.floor(diffMs / (1000 * 60));
     const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      const remMin = minutes % 60;
+      return `${hours}h ${remMin}m`;
+    }
     return `${minutes}m ${seconds}s`;
   };
 
@@ -352,11 +361,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
   // 2. Displayed Data-Source identification (Rules 1, 2, 6, 7)
   // LIVE MODE only when displayed P&L AND positions are actually sourced from live Zerodha pipeline
-  const isPnlLiveSourced = pnlResult?.source === 'ZERODHA_LIVE';
+  const isPnlLiveSourced = pnlResult?.source === 'ZERODHA_LIVE' || pnlResult?.dataSource === 'ZERODHA_LIVE';
   const isPositionsLiveSourced =
     fnoPositions.length > 0
       ? fnoPositions.every((pos) => pos.dataSource === 'ZERODHA_LIVE')
-      : false;
+      : isPnlLiveSourced;
 
   const isLiveMode = isPnlLiveSourced && isPositionsLiveSourced;
   const isSimulationMode = !isLiveMode;
@@ -464,7 +473,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   Trading Locked
                 </span>
                 <h2 className="text-xl sm:text-2xl font-black tracking-tight text-rose-900 dark:text-rose-100 mt-0.5">
-                  DAILY LOSS LIMIT REACHED · TRADING SUSPENDED
+                  DAILY LOSS LIMIT REACHED · FIREWALL LOCKED
                 </h2>
               </div>
             </div>
@@ -474,7 +483,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 Remaining Lock Duration
               </span>
               <span className="text-xl font-mono font-extrabold text-rose-900 dark:text-rose-100">
-                {getRemainingLockText() || `${riskConfig.lockDurationMinutes}m`}
+                {getRemainingLockText()}
               </span>
             </div>
           </div>
@@ -489,19 +498,19 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             <div className="bg-white/80 dark:bg-[#1F2633] p-3 rounded-xl border border-rose-500/20">
               <span className="text-[#5C6B7E] dark:text-[#98C1D9] block text-[11px]">Locked At (IST)</span>
               <span className="font-mono font-bold text-slate-800 dark:text-slate-200 mt-0.5 block">
-                {session.lockedAt ? new Date(session.lockedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A'}
+                {session.lockedAt ? new Date(session.lockedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'N/A (Data Error)'}
               </span>
             </div>
             <div className="bg-white/80 dark:bg-[#1F2633] p-3 rounded-xl border border-rose-500/20">
               <span className="text-[#5C6B7E] dark:text-[#98C1D9] block text-[11px]">Lock Until (IST)</span>
               <span className="font-mono font-bold text-slate-800 dark:text-slate-200 mt-0.5 block">
-                {session.lockUntil ? new Date(session.lockUntil).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A'}
+                {session.lockUntil ? new Date(session.lockUntil).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : 'N/A (Data Error)'}
               </span>
             </div>
           </div>
 
           <p className="text-xs text-rose-800 dark:text-rose-200 leading-relaxed pt-1">
-            Orders are blocked by the Trading Firewall. Lockout will automatically release at the scheduled lock expiry time.
+            Trading Firewall is locked. Broker orders are not modified or cancelled. Lockout will automatically release at the scheduled lock expiry time.
           </p>
         </div>
       )}
@@ -511,78 +520,107 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:divide-x divide-slate-100 dark:divide-[#3D4A5E]">
           
           {/* Pillar 1: Current Risk State (Visually Dominant) */}
-          <div className="flex flex-col justify-between pr-0 lg:pr-6">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-bold text-[#5C6B7E] dark:text-[#98C1D9] uppercase tracking-wider">
-                  Firewall Status
-                </span>
-                <span
-                  className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase tracking-wider ${
-                    session.state === 'LOCKED'
-                      ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/40'
-                      : session.state === 'WARNING'
-                      ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40'
-                      : 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40'
-                  }`}
-                >
-                  {session.state}
-                </span>
-              </div>
+          {(() => {
+            const isSyncStale =
+              isLiveMode &&
+              pnlResult !== null &&
+              session.currentPnl !== undefined &&
+              Math.abs(session.currentPnl - effectivePnl) > 0.01;
 
-              {/* Visually Dominant State Card */}
-              <div
-                className={`p-4 rounded-xl border-2 flex items-center space-x-4 mt-2 transition-all ${
-                  session.state === 'LOCKED'
-                    ? 'bg-rose-500/10 border-rose-500/40 text-rose-700 dark:text-rose-300'
-                    : session.state === 'WARNING'
-                    ? 'bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-300'
-                    : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-300'
-                }`}
-              >
-                <div
-                  className={`p-3.5 rounded-xl border flex items-center justify-center shrink-0 ${
-                    session.state === 'LOCKED'
-                      ? 'bg-rose-500/20 border-rose-500/40 text-rose-600 dark:text-rose-400'
-                      : session.state === 'WARNING'
-                      ? 'bg-amber-500/20 border-amber-500/40 text-amber-600 dark:text-amber-400'
-                      : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-600 dark:text-emerald-400'
-                  }`}
-                >
-                  {session.state === 'LOCKED' ? (
-                    <Lock className="w-9 h-9" />
-                  ) : session.state === 'WARNING' ? (
-                    <AlertTriangle className="w-9 h-9" />
-                  ) : (
-                    <ShieldCheck className="w-9 h-9" />
-                  )}
-                </div>
+            const displayState = isSyncStale ? 'EVALUATING' : session.state;
 
+            return (
+              <div className="flex flex-col justify-between pr-0 lg:pr-6">
                 <div>
-                  <div className="text-4xl font-black font-mono tracking-wider">
-                    {session.state}
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-[#5C6B7E] dark:text-[#98C1D9] uppercase tracking-wider">
+                      Firewall Status
+                    </span>
+                    <span
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase tracking-wider ${
+                        displayState === 'EVALUATING'
+                          ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 animate-pulse'
+                          : displayState === 'LOCKED'
+                          ? 'bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/40'
+                          : displayState === 'WARNING'
+                          ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40'
+                          : 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40'
+                      }`}
+                    >
+                      {displayState}
+                    </span>
                   </div>
-                  <div className="text-xs font-semibold mt-1">
-                    {session.state === 'LOCKED'
-                      ? 'Trading Locked · Circuit Breaker Engaged'
-                      : session.state === 'WARNING'
-                      ? 'Warning Active · Loss Nearing Limit'
-                      : 'Trading Authorized · Limits Normal'}
+
+                  {/* Visually Dominant State Card */}
+                  <div
+                    className={`p-4 rounded-xl border-2 flex items-center space-x-4 mt-2 transition-all ${
+                      displayState === 'EVALUATING'
+                        ? 'bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-300'
+                        : displayState === 'LOCKED'
+                        ? 'bg-rose-500/10 border-rose-500/40 text-rose-700 dark:text-rose-300'
+                        : displayState === 'WARNING'
+                        ? 'bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-300'
+                        : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-300'
+                    }`}
+                  >
+                    <div
+                      className={`p-3.5 rounded-xl border flex items-center justify-center shrink-0 ${
+                        displayState === 'EVALUATING'
+                          ? 'bg-amber-500/20 border-amber-500/40 text-amber-600 dark:text-amber-400'
+                          : displayState === 'LOCKED'
+                          ? 'bg-rose-500/20 border-rose-500/40 text-rose-600 dark:text-rose-400'
+                          : displayState === 'WARNING'
+                          ? 'bg-amber-500/20 border-amber-500/40 text-amber-600 dark:text-amber-400'
+                          : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-600 dark:text-emerald-400'
+                      }`}
+                    >
+                      {displayState === 'EVALUATING' ? (
+                        <RefreshCw className="w-9 h-9 animate-spin" />
+                      ) : displayState === 'LOCKED' ? (
+                        <Lock className="w-9 h-9" />
+                      ) : displayState === 'WARNING' ? (
+                        <AlertTriangle className="w-9 h-9" />
+                      ) : (
+                        <ShieldCheck className="w-9 h-9" />
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="text-4xl font-black font-mono tracking-wider">
+                        {displayState}
+                      </div>
+                      <div className="text-xs font-semibold mt-1">
+                        {displayState === 'EVALUATING'
+                          ? 'Syncing Risk State... Evaluating Current P&L'
+                          : displayState === 'LOCKED'
+                          ? 'Trading Locked · Circuit Breaker Engaged'
+                          : displayState === 'WARNING'
+                          ? 'Warning Active · Loss Nearing Limit'
+                          : 'Trading Authorized · Limits Normal'}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-[#3D4A5E] text-[11px] text-[#5C6B7E] dark:text-[#98C1D9] flex items-center justify-between">
-              <span>Protection: {riskConfig.enabled ? 'Active' : 'Disabled'}</span>
-              <span className="font-mono">
-                {session.lastEvaluatedAt
-                  ? new Date(session.lastEvaluatedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })
-                  : istTime}{' '}
-                IST
-              </span>
-            </div>
-          </div>
+                <div className="mt-4 pt-3 border-t border-slate-100 dark:border-[#3D4A5E] text-[11px] text-[#5C6B7E] dark:text-[#98C1D9] flex items-center justify-between">
+                  <span>
+                    Protection:{' '}
+                    {!riskConfig.enabled
+                      ? 'Disabled'
+                      : pnlResult?.liveRiskStateRecordingEnabled === true
+                      ? 'Active'
+                      : 'Shadow Mode'}
+                  </span>
+                  <span className="font-mono">
+                    {session.lastEvaluatedAt
+                      ? new Date(session.lastEvaluatedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })
+                      : istTime}{' '}
+                    IST
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Pillar 2: F&O P&L (Clearly distinguishing LIVE vs SIMULATION mode) */}
           <div className="flex flex-col justify-between px-0 lg:px-6">
@@ -1056,7 +1094,19 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
                       {/* LTP */}
                       <td className="px-4 py-3 text-right text-slate-700 dark:text-slate-300">
-                        ₹{pos.lastPrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        <div className="flex flex-col items-end">
+                          <span>₹{pos.lastPrice.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          {isLiveMode && pos.quantity !== 0 && pos.hasValidatedLtp === false && (
+                            <span className="text-[9px] font-sans font-semibold text-amber-700 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20 mt-0.5">
+                              Broker LTP
+                            </span>
+                          )}
+                          {isLiveMode && pos.quantity !== 0 && pos.hasValidatedLtp === true && (
+                            <span className="text-[9px] font-sans font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20 mt-0.5">
+                              Validated
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* P&L */}

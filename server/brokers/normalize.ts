@@ -137,6 +137,7 @@ export function normalizePosition(
     dataSource,
     unknownInstrument: isUnknown,
     provenance: raw.provenance || 'net',
+    brokerLtp: raw.last_price,
   };
 }
 

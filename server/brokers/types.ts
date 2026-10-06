@@ -132,6 +132,9 @@ export interface NormalizedPosition {
   dataSource: 'MOCK_DATA' | 'ZERODHA_LIVE';
   unknownInstrument?: boolean;
   provenance?: 'net' | 'day';
+  brokerLtp?: number;
+  validatedLtp?: number;
+  hasValidatedLtp?: boolean;
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   setLiveRiskStateRecordingEnabled,
 } from './risk/liveRiskRecorder';
 import { getTradingDateKolkata } from './risk/engine';
+import { ActivationGuardService } from './risk/activationGuard';
 
 export const apiRouter = express.Router();
 
@@ -452,6 +453,37 @@ apiRouter.get('/pnl', async (req: Request, res: Response) => {
         validationResult.validationState !== 'AUTHENTICATION_REQUIRED' &&
         validationResult.validationState !== 'ERROR'
       ) {
+        let liveRiskSession: any = null;
+        let shadowRiskResult: any = null;
+
+        if (liveRiskStateRecordingEnabled) {
+          const liveRiskResult = await LiveRiskRecorder.evaluateAndRecordLiveRisk(userId, {
+            evaluationTime: new Date(),
+          });
+          liveRiskSession = liveRiskResult.session;
+        } else {
+          shadowRiskResult = await ShadowRiskService.evaluateLiveShadow(userId);
+          liveRiskSession = {
+            tradingDate: validationResult.tradingDate,
+            userId,
+            state: shadowRiskResult.expectedState,
+            isBreached: shadowRiskResult.isBreached,
+            lockedAt: shadowRiskResult.lockedAt || null,
+            lockUntil: shadowRiskResult.lockUntil || null,
+            currentPnl: validationResult.calculated.grossTradingPnl,
+            lossAmount: shadowRiskResult.lossAmount,
+            realisedPnl: validationResult.calculated.dailyRealisedPnl,
+            unrealisedPnl: validationResult.calculated.dailyUnrealisedPnl,
+            lossLimit: config.dailyLossLimit,
+            warningThreshold1: config.warningThreshold1,
+            warningThreshold2: config.warningThreshold2,
+            lastEvaluatedAt: shadowRiskResult.evaluatedAt,
+            reason: shadowRiskResult.reason,
+          };
+        }
+
+        const isRecordingActive = getLiveRiskStateRecordingEnabled();
+
         const livePnlResult = {
           tradingDate: validationResult.tradingDate,
           realisedPnl: validationResult.calculated.realisedPnl,
@@ -466,17 +498,25 @@ apiRouter.get('/pnl', async (req: Request, res: Response) => {
           includedRealisedPnl: validationResult.calculated.dailyRealisedPnl,
           includedUnrealisedPnl: validationResult.calculated.dailyUnrealisedPnl,
           source: 'ZERODHA_LIVE' as const,
+          dataSource: 'ZERODHA_LIVE' as const,
           calculatedAt: validationResult.timestamp,
+          evaluatedAt: validationResult.timestamp,
           validationState: validationResult.validationState,
           marketDataStatus: validationResult.marketDataStatus,
+          riskSession: liveRiskSession,
+          shadowSession: liveRiskSession,
+          shadowRisk: shadowRiskResult,
+          state: liveRiskSession.state,
+          currentPnl: validationResult.calculated.grossTradingPnl,
+          lossAmount: liveRiskSession.lossAmount,
+          dailyLossLimit: config.dailyLossLimit,
+          warningThresholds: {
+            warningThreshold1: config.warningThreshold1,
+            warningThreshold2: config.warningThreshold2,
+          },
+          liveRiskStateRecordingEnabled: isRecordingActive,
+          recordingStatus: isRecordingActive ? 'ACTIVE' : 'SHADOW_ONLY',
         };
-
-        // If authoritative live recording is enabled, record to RiskSession
-        if (liveRiskStateRecordingEnabled) {
-          await LiveRiskRecorder.evaluateAndRecordLiveRisk(userId, {
-            evaluationTime: new Date(),
-          });
-        }
 
         return sendJson(res, livePnlResult);
       }
@@ -563,7 +603,28 @@ apiRouter.get('/risk/recording-status', handleRecordingStatus);
 apiRouter.get('/risk/live/recording', handleRecordingStatus);
 apiRouter.get('/risk/live/recording/status', handleRecordingStatus);
 
-// POST /api/risk/recording/control - Phase 10B Server-Authoritative Controlled Activation
+// GET /api/risk/live/activation/preflight - Phase 11A Server-Authoritative Production Preflight Check
+const handleActivationPreflight = async (req: Request, res: Response) => {
+  try {
+    const headerUser = req.headers['x-user-id'] || req.headers['authorization'];
+    if (!headerUser) {
+      return sendJson(res, { error: 'UNAUTHENTICATED', message: 'Authentication required' }, 401);
+    }
+    const userId = resolveUserId(req);
+    if (userId === 'default_trader') {
+      return sendJson(res, { error: 'UNAUTHENTICATED', message: 'Authenticated user required' }, 401);
+    }
+    const preflight = await ActivationGuardService.evaluatePreflight(userId);
+    sendJson(res, preflight);
+  } catch (err) {
+    sendJson(res, { error: err instanceof Error ? err.message : 'Preflight evaluation failed' }, 500);
+  }
+};
+
+apiRouter.get('/risk/live/activation/preflight', handleActivationPreflight);
+apiRouter.get('/risk/recording/preflight', handleActivationPreflight);
+
+// POST /api/risk/recording/control - Phase 10B/11A Server-Authoritative Controlled Activation
 const handleRecordingControl = async (req: Request, res: Response) => {
   try {
     const headerUser = req.headers['x-user-id'] || req.headers['authorization'];
@@ -571,35 +632,71 @@ const handleRecordingControl = async (req: Request, res: Response) => {
       return sendJson(res, { error: 'UNAUTHENTICATED', message: 'Authentication required' }, 401);
     }
     const userId = resolveUserId(req);
+    if (userId === 'default_trader') {
+      return sendJson(res, { error: 'UNAUTHENTICATED', message: 'Authenticated user required' }, 401);
+    }
     const { enabled } = req.body || {};
     if (typeof enabled !== 'boolean') {
       return sendJson(res, { error: 'INVALID_REQUEST', message: '"enabled" boolean field is required' }, 400);
     }
 
-    setLiveRiskStateRecordingEnabled(enabled);
+    if (enabled) {
+      // Evaluate server-authoritative preflight checks BEFORE permitting activation
+      const preflight = await ActivationGuardService.evaluatePreflight(userId);
+      if (!preflight.ready || preflight.blockers.length > 0) {
+        return sendJson(
+          res,
+          {
+            success: false,
+            error: 'PREFLIGHT_CHECK_FAILED',
+            message: 'Cannot enable live risk state recording: preflight checks failed.',
+            preflight,
+            blockers: preflight.blockers,
+          },
+          400
+        );
+      }
 
-    const session = await ServerRiskStore.getSession(userId);
-    const liveAdapter = BrokerService.getLiveAdapter();
-    const connStatus = await liveAdapter.getConnectionStatus(userId);
-    const dataSource = (connStatus.status === 'CONNECTED' && connStatus.authenticated)
-      ? 'ZERODHA_LIVE'
-      : 'MOCK_DATA';
-    const tradingDate = session?.tradingDate || getTradingDateKolkata();
+      setLiveRiskStateRecordingEnabled(true);
+      ServerRiskStore.recordEvent(userId, {
+        type: 'CONFIG_UPDATED',
+        message: `Authoritative live RiskSession recording explicitly activated for user ${userId}.`,
+      });
 
-    sendJson(res, {
-      success: true,
-      enabled,
-      liveRiskStateRecordingEnabled: enabled,
-      activationState: enabled ? 'ACTIVE' : 'SHADOW_ONLY',
-      currentRiskState: session?.state || 'ALLOW',
-      tradingDate,
-      lockUntil: session?.lockUntil || null,
-      dataSource,
-      status: enabled ? 'RECORDING_ENABLED' : 'SHADOW_ONLY',
-      message: enabled
-        ? 'Authoritative live RiskSession/riskEvents recording activated.'
-        : 'Authoritative live RiskSession/riskEvents recording deactivated (Shadow Mode).',
-    });
+      // Perform FIRST REAL EVALUATION immediately after activation
+      const firstEvaluation = await LiveRiskRecorder.evaluateAndRecordLiveRisk(userId);
+
+      sendJson(res, {
+        success: true,
+        enabled: true,
+        liveRiskStateRecordingEnabled: true,
+        activationState: 'ACTIVE',
+        currentRiskState: firstEvaluation.state || preflight.currentRiskState,
+        tradingDate: firstEvaluation.tradingDate || preflight.tradingDate,
+        lockUntil: firstEvaluation.session?.lockUntil || preflight.lockUntil,
+        lossAmount: firstEvaluation.lossAmount ?? 0,
+        grossTradingPnl: firstEvaluation.grossTradingPnl ?? 0,
+        dataSource: firstEvaluation.dataSource || preflight.dataSource,
+        status: 'RECORDING_ENABLED',
+        message: 'Authoritative live RiskSession/riskEvents recording activated and first real evaluation completed.',
+        firstEvaluation,
+      });
+    } else {
+      setLiveRiskStateRecordingEnabled(false);
+      ServerRiskStore.recordEvent(userId, {
+        type: 'CONFIG_UPDATED',
+        message: `Authoritative live RiskSession recording explicitly deactivated (Shadow Mode) for user ${userId}.`,
+      });
+
+      sendJson(res, {
+        success: true,
+        enabled: false,
+        liveRiskStateRecordingEnabled: false,
+        activationState: 'SHADOW_ONLY',
+        status: 'SHADOW_ONLY',
+        message: 'Authoritative live RiskSession/riskEvents recording deactivated (Shadow Mode).',
+      });
+    }
   } catch (err) {
     sendJson(res, { error: err instanceof Error ? err.message : 'Failed to update recording control' }, 500);
   }
@@ -612,6 +709,32 @@ apiRouter.post('/risk/live/recording', handleRecordingControl);
 apiRouter.get('/risk', async (req: Request, res: Response) => {
   try {
     const userId = resolveUserId(req);
+    if (!getLiveRiskStateRecordingEnabled()) {
+      const liveAdapter = BrokerService.getLiveAdapter();
+      const connStatus = await liveAdapter.getConnectionStatus(userId);
+      if (connStatus.status === 'CONNECTED' && connStatus.authenticated) {
+        const shadowResult = await ShadowRiskService.evaluateLiveShadow(userId);
+        const config = await ServerRiskStore.getConfig(userId);
+        return sendJson(res, {
+          tradingDate: shadowResult.tradingDate,
+          userId,
+          state: shadowResult.expectedState,
+          isBreached: shadowResult.isBreached,
+          lockedAt: shadowResult.lockedAt || null,
+          lockUntil: shadowResult.lockUntil || null,
+          currentPnl: shadowResult.grossTradingPnl,
+          lossAmount: shadowResult.lossAmount,
+          realisedPnl: shadowResult.pnlResult?.dailyRealisedPnl ?? 0,
+          unrealisedPnl: shadowResult.pnlResult?.dailyUnrealisedPnl ?? 0,
+          lossLimit: config.dailyLossLimit,
+          warningThreshold1: config.warningThreshold1,
+          warningThreshold2: config.warningThreshold2,
+          lastEvaluatedAt: shadowResult.evaluatedAt,
+          reason: shadowResult.reason,
+          shadow: true,
+        });
+      }
+    }
     const session = await ServerRiskStore.getSession(userId);
     sendJson(res, session);
   } catch (err) {
@@ -638,7 +761,16 @@ apiRouter.put('/risk/config', async (req: Request, res: Response) => {
     const result = await ServerRiskStore.saveConfig(userId, body);
 
     if (!result.success) {
-      return sendJson(res, { success: false, errors: result.errors }, 400);
+      const isLocked = result.code === 'RISK_CONFIG_LOCKED' || result.errors?.some(e => e.includes('RISK_CONFIG_LOCKED'));
+      return sendJson(
+        res,
+        {
+          success: false,
+          code: isLocked ? 'RISK_CONFIG_LOCKED' : 'INVALID_CONFIG',
+          errors: result.errors,
+        },
+        isLocked ? 403 : 400
+      );
     }
 
     sendJson(res, { success: true, config: result.config });

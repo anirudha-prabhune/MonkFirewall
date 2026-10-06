@@ -113,6 +113,8 @@ export class ShadowRiskService {
 
       expectedState: riskEval.state,
       isBreached: riskEval.isBreached,
+      lockedAt: riskEval.lockedAt,
+      lockUntil: riskEval.lockUntil,
       reason: riskEval.reason || defaultReason,
 
       validationState: validationResult.validationState,

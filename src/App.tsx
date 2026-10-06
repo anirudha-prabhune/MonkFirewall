@@ -8,6 +8,7 @@ import { RiskConfigEditor } from './components/RiskConfigEditor';
 import { SystemHealth } from './components/SystemHealth';
 import { RiskConfig, DEFAULT_RISK_CONFIG } from './types/risk';
 import { subscribeRiskConfig, getRiskConfig } from './services/riskConfigService';
+import { getAuthoritativeRiskSession } from './services/riskSessionService';
 import { Shield, RefreshCw } from 'lucide-react';
 
 function MainApp() {
@@ -15,12 +16,30 @@ function MainApp() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'settings' | 'health'>('dashboard');
   const [riskConfig, setRiskConfig] = useState<RiskConfig>(DEFAULT_RISK_CONFIG);
   const [configLoading, setConfigLoading] = useState(false);
+  const [isRiskLocked, setIsRiskLocked] = useState(false);
 
   useEffect(() => {
     if (!user) {
       setRiskConfig(DEFAULT_RISK_CONFIG);
+      setIsRiskLocked(false);
       return;
     }
+
+    const pollRiskState = async () => {
+      try {
+        const session = await getAuthoritativeRiskSession(user.uid);
+        if (session && session.state === 'LOCKED') {
+          const isUnexpired = !session.lockUntil || new Date(session.lockUntil).getTime() > Date.now();
+          setIsRiskLocked(isUnexpired);
+        } else {
+          setIsRiskLocked(false);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    pollRiskState();
+    const interval = setInterval(pollRiskState, 4000);
 
     setConfigLoading(true);
     // Initial fetch
@@ -45,7 +64,10 @@ function MainApp() {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      clearInterval(interval);
+      unsubscribe();
+    };
   }, [user]);
 
   if (authLoading) {
@@ -100,6 +122,7 @@ function MainApp() {
               <RiskConfigEditor
                 initialConfig={riskConfig}
                 onSaved={(updated) => setRiskConfig(updated)}
+                isLocked={isRiskLocked}
               />
             )}
 

@@ -62,5 +62,13 @@ export interface PnlResult {
   positions: PositionPnl[];
 
   source: string;
+  dataSource?: string;
   calculatedAt: string;
+  validationState?: string;
+  marketDataStatus?: string;
+  riskSession?: any;
+  shadowSession?: any;
+  shadowRisk?: any;
+  liveRiskStateRecordingEnabled?: boolean;
+  recordingStatus?: string;
 }

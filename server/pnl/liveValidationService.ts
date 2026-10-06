@@ -169,7 +169,12 @@ export class LivePnlValidationService {
         const tick = MarketDataService.getTick(pos.instrumentToken, evaluationTime);
         if (!tick) {
           hasMissingLtp = true;
-          return { ...pos };
+          return {
+            ...pos,
+            brokerLtp: pos.brokerLtp ?? pos.lastPrice,
+            hasValidatedLtp: false,
+            validatedLtp: undefined,
+          };
         }
 
         if (tick.isStale) {
@@ -179,6 +184,9 @@ export class LivePnlValidationService {
         // Update position lastPrice with authoritative live market data
         return {
           ...pos,
+          brokerLtp: pos.brokerLtp ?? pos.lastPrice,
+          validatedLtp: tick.lastPrice,
+          hasValidatedLtp: true,
           lastPrice: tick.lastPrice,
         };
       });

@@ -109,9 +109,9 @@ export const RiskConfigEditor: React.FC<RiskConfigEditorProps> = ({
         <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 text-amber-900 dark:text-amber-300 text-xs flex items-start space-x-2.5 shadow-xs">
           <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div>
-            <span className="font-bold text-amber-900 dark:text-amber-200">Active Lock in Effect:</span>
+            <span className="font-bold text-amber-900 dark:text-amber-200">Circuit Breaker Locked:</span>
             <p className="text-amber-800 dark:text-amber-300 mt-0.5">
-              An active trading lockout is currently underway. Updating configuration parameters now will apply to future sessions, but will not prematurely release the current active lock until its scheduled expiry.
+              Trading Firewall is currently LOCKED. Daily Loss Limit and Lockout Schedule cannot be modified during an active lock to preserve risk protection integrity.
             </p>
           </div>
         </div>
@@ -185,12 +185,19 @@ export const RiskConfigEditor: React.FC<RiskConfigEditorProps> = ({
                 step="500"
                 value={formData.dailyLossLimit}
                 onChange={(e) => handleChange('dailyLossLimit', Number(e.target.value))}
-                className="w-full bg-[#F3F8FA] dark:bg-[#283244] border border-[#98C1D9]/50 dark:border-[#3D4A5E] rounded-xl px-4 py-2.5 text-sm text-[#293241] dark:text-[#E0FBFC] font-mono focus:outline-hidden focus:border-[#3D5A80] dark:focus:border-[#98C1D9] transition-all"
+                disabled={isLocked}
+                className="w-full bg-[#F3F8FA] dark:bg-[#283244] border border-[#98C1D9]/50 dark:border-[#3D4A5E] rounded-xl px-4 py-2.5 text-sm text-[#293241] dark:text-[#E0FBFC] font-mono focus:outline-hidden focus:border-[#3D5A80] dark:focus:border-[#98C1D9] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                 required
               />
-              <p className="text-[11px] text-[#5C6B7E] dark:text-[#98C1D9] mt-1.5">
-                Minimum ₹500 in increments of ₹500. When cumulative daily loss reaches this limit, trading is automatically locked.
-              </p>
+              {isLocked ? (
+                <p className="text-[11px] text-amber-700 dark:text-amber-400 font-semibold mt-1.5">
+                  Locked while Trading Firewall circuit breaker is active.
+                </p>
+              ) : (
+                <p className="text-[11px] text-[#5C6B7E] dark:text-[#98C1D9] mt-1.5">
+                  Minimum ₹500 in increments of ₹500. When cumulative daily loss reaches this limit, trading is automatically locked.
+                </p>
+              )}
             </div>
 
             {/* Master Toggle */}
@@ -230,13 +237,15 @@ export const RiskConfigEditor: React.FC<RiskConfigEditorProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
+                  disabled={isLocked}
                   onClick={() => {
+                    if (isLocked) return;
                     handleChange('lockDurationType', 'FIXED');
                     if (!formData.lockDurationMinutes || formData.lockDurationMinutes < 60) {
                       handleChange('lockDurationMinutes', 60);
                     }
                   }}
-                  className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all ${
+                  className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                     (formData.lockDurationType ?? 'FIXED') === 'FIXED'
                       ? 'bg-white dark:bg-[#283244] border-[#3D5A80] dark:border-[#98C1D9] shadow-xs'
                       : 'bg-slate-50/80 dark:bg-[#19202B] border-[#98C1D9]/40 dark:border-[#3D4A5E] opacity-75 hover:opacity-100'
@@ -263,8 +272,12 @@ export const RiskConfigEditor: React.FC<RiskConfigEditorProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => handleChange('lockDurationType', 'UNTIL_4PM')}
-                  className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all ${
+                  disabled={isLocked}
+                  onClick={() => {
+                    if (isLocked) return;
+                    handleChange('lockDurationType', 'UNTIL_4PM');
+                  }}
+                  className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                     formData.lockDurationType === 'UNTIL_4PM'
                       ? 'bg-white dark:bg-[#283244] border-[#3D5A80] dark:border-[#98C1D9] shadow-xs'
                       : 'bg-slate-50/80 dark:bg-[#19202B] border-[#98C1D9]/40 dark:border-[#3D4A5E] opacity-75 hover:opacity-100'
@@ -308,12 +321,19 @@ export const RiskConfigEditor: React.FC<RiskConfigEditorProps> = ({
                     step="1"
                     value={lockHours}
                     onChange={(e) => handleHoursChange(Number(e.target.value))}
-                    className="w-full bg-[#F3F8FA] dark:bg-[#283244] border border-[#98C1D9]/50 dark:border-[#3D4A5E] rounded-xl px-4 py-2.5 text-sm text-[#293241] dark:text-[#E0FBFC] font-mono focus:outline-hidden focus:border-[#3D5A80] dark:focus:border-[#98C1D9] transition-all"
+                    disabled={isLocked}
+                    className="w-full bg-[#F3F8FA] dark:bg-[#283244] border border-[#98C1D9]/50 dark:border-[#3D4A5E] rounded-xl px-4 py-2.5 text-sm text-[#293241] dark:text-[#E0FBFC] font-mono focus:outline-hidden focus:border-[#3D5A80] dark:focus:border-[#98C1D9] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                     required
                   />
-                  <p className="text-[11px] text-[#5C6B7E] dark:text-[#98C1D9] mt-1.5">
-                    Minimum 1 hour, in increments of 1 hour.
-                  </p>
+                  {isLocked ? (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-400 font-semibold mt-1.5">
+                      Lockout schedule cannot be modified during an active lock.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-[#5C6B7E] dark:text-[#98C1D9] mt-1.5">
+                      Minimum 1 hour, in increments of 1 hour.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="mt-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-xs flex items-center space-x-2.5">

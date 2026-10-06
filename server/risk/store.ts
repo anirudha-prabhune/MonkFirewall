@@ -1,5 +1,5 @@
-import { doc, collection, runTransaction, deleteDoc } from 'firebase/firestore';
-import { db } from '../../src/services/firebase';
+import { doc, collection, runTransaction, deleteDoc, getDoc, setDoc } from 'firebase/firestore';
+import { db, auth } from '../../src/services/firebase';
 import { RiskConfig, DEFAULT_RISK_CONFIG } from '../../src/types/risk';
 import {
   RiskEngine,
@@ -12,6 +12,7 @@ import { validateRiskConfig } from './validation';
 import { PnlResult } from '../pnl/types';
 import { PnlEngine } from '../pnl/engine';
 import { BrokerService } from '../brokers/service';
+import { ShadowRiskService } from './shadowRiskService';
 
 /**
  * Server-authoritative Risk Store and Session Manager (Phase 5).
@@ -30,6 +31,7 @@ interface UserRiskState {
   config: RiskConfig;
   sessions: Map<string, RiskSession>; // tradingDate -> RiskSession
   events: RiskEvent[];
+  loadedFromFirestore?: boolean;
 }
 
 export class ServerRiskStore {
@@ -42,6 +44,7 @@ export class ServerRiskStore {
         config: { ...DEFAULT_RISK_CONFIG, updatedAt: new Date().toISOString() },
         sessions: new Map(),
         events: [],
+        loadedFromFirestore: false,
       };
       this.userStates.set(userId, state);
     }
@@ -50,13 +53,34 @@ export class ServerRiskStore {
 
   public static async getConfig(userId: string): Promise<RiskConfig> {
     const userState = this.getOrCreateUserState(userId);
+    if (!userState.loadedFromFirestore) {
+      if (auth?.currentUser && auth.currentUser.uid === userId) {
+        try {
+          const configDocRef = doc(db, 'users', userId, 'riskConfig', 'config');
+          const snap = await getDoc(configDocRef);
+          if (snap.exists()) {
+            const raw = snap.data();
+            const validation = validateRiskConfig(raw);
+            if (validation.valid && validation.sanitized) {
+              userState.config = validation.sanitized;
+            }
+          }
+        } catch {
+          // Fall back to in-memory store
+        } finally {
+          userState.loadedFromFirestore = true;
+        }
+      } else {
+        userState.loadedFromFirestore = true;
+      }
+    }
     return { ...userState.config };
   }
 
   public static async saveConfig(
     userId: string,
     rawInput: any
-  ): Promise<{ success: boolean; config?: RiskConfig; errors?: string[] }> {
+  ): Promise<{ success: boolean; config?: RiskConfig; errors?: string[]; code?: string }> {
     const validation = validateRiskConfig(rawInput);
     if (!validation.valid || !validation.sanitized) {
       console.warn(`[RiskStore] Config validation failed for user ${userId}:`, validation.errors);
@@ -64,8 +88,78 @@ export class ServerRiskStore {
     }
 
     const userState = this.getOrCreateUserState(userId);
+    const currentConfig = userState.config;
     const sanitized = validation.sanitized;
+
+    // Phase 11C: LOCKED Config Immutability Guard
+    const today = getTradingDateKolkata(new Date());
+    let activeSession = userState.sessions.get(today) || Array.from(userState.sessions.values()).find((s) => s.state === 'LOCKED');
+
+    // If no in-memory locked session exists yet, evaluate live shadow state
+    if (!activeSession || activeSession.state !== 'LOCKED') {
+      try {
+        const liveAdapter = BrokerService.getLiveAdapter();
+        const connStatus = await liveAdapter.getConnectionStatus(userId);
+        if (connStatus.status === 'CONNECTED' && connStatus.authenticated) {
+          const shadowResult = await ShadowRiskService.evaluateLiveShadow(userId);
+          if (shadowResult.expectedState === 'LOCKED') {
+            activeSession = {
+              tradingDate: today,
+              userId,
+              state: 'LOCKED',
+              isBreached: true,
+              lockedAt: shadowResult.lockedAt || new Date().toISOString(),
+              lockUntil: shadowResult.lockUntil || null,
+              currentPnl: shadowResult.grossTradingPnl,
+              realisedPnl: 0,
+              unrealisedPnl: 0,
+              lossLimit: currentConfig.dailyLossLimit,
+              warningThreshold1: currentConfig.warningThreshold1,
+              warningThreshold2: currentConfig.warningThreshold2,
+              lastEvaluatedAt: shadowResult.evaluatedAt,
+              reason: shadowResult.reason,
+            };
+          }
+        }
+      } catch {
+        // Fall through
+      }
+    }
+
+    const isLocked = activeSession?.state === 'LOCKED';
+    const isLockActive =
+      isLocked &&
+      (!activeSession?.lockUntil || new Date(activeSession.lockUntil).getTime() > Date.now());
+
+    if (isLockActive) {
+      const isLimitAttempted = sanitized.dailyLossLimit !== currentConfig.dailyLossLimit;
+      const isLockoutAttempted =
+        sanitized.lockDurationMinutes !== currentConfig.lockDurationMinutes ||
+        sanitized.lockDurationType !== currentConfig.lockDurationType;
+
+      if (isLimitAttempted || isLockoutAttempted) {
+        console.warn(`[RiskStore] Attempted RiskConfig mutation rejected while LOCKED for user ${userId}`);
+        return {
+          success: false,
+          code: 'RISK_CONFIG_LOCKED',
+          errors: [
+            'RISK_CONFIG_LOCKED: Daily loss limit and lockout schedule cannot be modified while Trading Firewall circuit breaker is LOCKED.',
+          ],
+        };
+      }
+    }
+
     userState.config = sanitized;
+    userState.loadedFromFirestore = true;
+
+    if (auth?.currentUser && auth.currentUser.uid === userId) {
+      try {
+        const configDocRef = doc(db, 'users', userId, 'riskConfig', 'config');
+        await setDoc(configDocRef, sanitized, { merge: true });
+      } catch {
+        // Fall back to in-memory store
+      }
+    }
 
     const event: RiskEvent = {
       userId,
@@ -84,7 +178,6 @@ export class ServerRiskStore {
     );
 
     // If an active session is currently LOCKED, verify that the lock is preserved
-    const today = getTradingDateKolkata(new Date());
     const currentSession = userState.sessions.get(today);
     if (currentSession && currentSession.state === 'LOCKED') {
       console.log(
@@ -107,73 +200,78 @@ export class ServerRiskStore {
   ): Promise<RiskEvaluationResult> {
     const userState = this.getOrCreateUserState(userId);
     const tradingDate = pnlResult.tradingDate || getTradingDateKolkata(evaluationTime);
-    const sessionDocRef = doc(db, 'users', userId, 'riskSessions', tradingDate);
-    const configDocRef = doc(db, 'users', userId, 'riskConfig', 'config');
 
-    // Attempt Firestore ACID transaction
-    try {
-      const txResult = await runTransaction(db, async (transaction) => {
-        const [sessionSnap, configSnap] = await Promise.all([
-          transaction.get(sessionDocRef),
-          transaction.get(configDocRef),
-        ]);
+    // Only attempt client SDK Firestore transaction if authenticated client user matches
+    if (auth?.currentUser && auth.currentUser.uid === userId) {
+      const sessionDocRef = doc(db, 'users', userId, 'riskSessions', tradingDate);
+      const configDocRef = doc(db, 'users', userId, 'riskConfig', 'config');
 
-        const activeConfig: RiskConfig = configOverride || (configSnap.exists()
-          ? (configSnap.data() as RiskConfig)
-          : userState.config);
+      try {
+        const txResult = await runTransaction(db, async (transaction) => {
+          const [sessionSnap, configSnap] = await Promise.all([
+            transaction.get(sessionDocRef),
+            transaction.get(configDocRef),
+          ]);
 
-        const existingSession: RiskSession | null = sessionSnap.exists()
-          ? (sessionSnap.data() as RiskSession)
-          : userState.sessions.get(tradingDate) || null;
+          const activeConfig: RiskConfig = configOverride || (configSnap.exists()
+            ? (configSnap.data() as RiskConfig)
+            : userState.config);
 
-        const evaluation = RiskEngine.evaluate({
-          userId,
-          config: activeConfig,
-          pnlResult,
-          currentSession: existingSession,
-          evaluationTime,
+          const existingSession: RiskSession | null = sessionSnap.exists()
+            ? (sessionSnap.data() as RiskSession)
+            : userState.sessions.get(tradingDate) || null;
+
+          const evaluation = RiskEngine.evaluate({
+            userId,
+            config: activeConfig,
+            pnlResult,
+            currentSession: existingSession,
+            evaluationTime,
+          });
+
+          // Persist authoritative session in Firestore transaction
+          transaction.set(sessionDocRef, evaluation.session);
+
+          // Record transition events in Firestore transaction
+          for (const event of evaluation.transitionEvents) {
+            const eventRef = doc(collection(db, 'users', userId, 'riskEvents'));
+            transaction.set(eventRef, event);
+          }
+
+          return evaluation;
         });
 
-        // Persist authoritative session in Firestore transaction
-        transaction.set(sessionDocRef, evaluation.session);
-
-        // Record transition events in Firestore transaction
-        for (const event of evaluation.transitionEvents) {
-          const eventRef = doc(collection(db, 'users', userId, 'riskEvents'));
-          transaction.set(eventRef, event);
+        // Synchronize in-memory cache with committed transaction
+        userState.sessions.set(tradingDate, txResult.session);
+        for (const event of txResult.transitionEvents) {
+          userState.events.push(event);
         }
-
-        return evaluation;
-      });
-
-      // Synchronize in-memory cache with committed transaction
-      userState.sessions.set(tradingDate, txResult.session);
-      for (const event of txResult.transitionEvents) {
-        userState.events.push(event);
+        return txResult;
+      } catch {
+        // Fall through to deterministic memory serialization
       }
-      return txResult;
-    } catch (firestoreTxErr) {
-      // Offline fallback: execute deterministic server-authoritative evaluation with atomic memory serialization
-      const existingSession = userState.sessions.get(tradingDate) || null;
-      const activeConfig = configOverride || userState.config;
-
-      const result = RiskEngine.evaluate({
-        userId,
-        config: activeConfig,
-        pnlResult,
-        currentSession: existingSession,
-        evaluationTime,
-      });
-
-      userState.sessions.set(tradingDate, result.session);
-
-      for (const event of result.transitionEvents) {
-        userState.events.push(event);
-        console.log(`[RiskStore] Transition Event [${event.type}] for user ${userId}: ${event.message}`);
-      }
-
-      return result;
     }
+
+    // In-memory server-authoritative evaluation
+    const existingSession = userState.sessions.get(tradingDate) || null;
+    const activeConfig = configOverride || userState.config;
+
+    const result = RiskEngine.evaluate({
+      userId,
+      config: activeConfig,
+      pnlResult,
+      currentSession: existingSession,
+      evaluationTime,
+    });
+
+    userState.sessions.set(tradingDate, result.session);
+
+    for (const event of result.transitionEvents) {
+      userState.events.push(event);
+      console.log(`[RiskStore] Transition Event [${event.type}] for user ${userId}: ${event.message}`);
+    }
+
+    return result;
   }
 
   /**
@@ -268,6 +366,19 @@ export class ServerRiskStore {
   public static async getAuditEvents(userId: string): Promise<RiskEvent[]> {
     const userState = this.getOrCreateUserState(userId);
     return [...userState.events];
+  }
+
+  public static recordEvent(
+    userId: string,
+    eventInput: { type: RiskEvent['type']; message: string; timestamp?: string }
+  ): void {
+    const userState = this.getOrCreateUserState(userId);
+    userState.events.push({
+      userId,
+      type: eventInput.type,
+      message: eventInput.message,
+      timestamp: eventInput.timestamp || new Date().toISOString(),
+    });
   }
 
   /**
